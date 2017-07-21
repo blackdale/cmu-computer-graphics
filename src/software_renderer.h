@@ -66,7 +66,7 @@ class SoftwareRenderer : public SVGRenderer {
 class SoftwareRendererImp : public SoftwareRenderer {
  public:
 
-  SoftwareRendererImp( ) : SoftwareRenderer( ) { }
+  SoftwareRendererImp( ) : SoftwareRenderer( ), supersample_render_target(nullptr) { }
 
   // draw an svg input to render target
   void draw_svg( SVG& svg );
@@ -83,7 +83,7 @@ class SoftwareRendererImp : public SoftwareRenderer {
   // Primitive Drawing //
 
   // Draws an SVG element
-  void draw_element( SVGElement* element );
+  void draw_element( SVGElement* element, Matrix3x3 groupTransform );
 
   // Draws a point
   void draw_point( Point& p );
@@ -107,13 +107,13 @@ class SoftwareRendererImp : public SoftwareRenderer {
   void draw_image( Image& image );
 
   // Draw a group
-  void draw_group( Group& group );
+  void draw_group( Group& group, Matrix3x3 groupTransform );
 
   // Rasterization //
 
   // rasterize a point
   void rasterize_point( float x, float y, Color color );
-  void rasterize_pointi(int x, int y, Color color);
+  void rasterize_pointi(unsigned char *rt, int w, int h, int x, int y, Color color);
 
   // rasterize a line
   void rasterize_line( float x0, float y0,
@@ -133,6 +133,10 @@ class SoftwareRendererImp : public SoftwareRenderer {
 
   // resolve samples to render target
   void resolve( void );
+
+  void setup_supersample();
+
+  unsigned char* supersample_render_target;
 
 }; // class SoftwareRendererImp
 

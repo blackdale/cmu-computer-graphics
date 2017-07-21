@@ -16,13 +16,13 @@ namespace CMU462 {
 
 void SoftwareRendererImp::draw_svg( SVG& svg ) {
 
-  // set top level transformation
-  transformation = canvas_to_screen;
-
   // draw all elements
   for ( size_t i = 0; i < svg.elements.size(); ++i ) {
-    draw_element(svg.elements[i]);
+    draw_element(svg.elements[i], Matrix3x3::identity());
   }
+
+  // set top level transformation
+  transformation = canvas_to_screen;
 
   // draw canvas outline
   Vector2D a = transform(Vector2D(    0    ,     0    )); a.x--; a.y++;
@@ -40,12 +40,22 @@ void SoftwareRendererImp::draw_svg( SVG& svg ) {
 
 }
 
+void SoftwareRendererImp::setup_supersample()
+{
+	delete this->supersample_render_target;
+	this->supersample_render_target = 0;
+	if (sample_rate > 1) {
+		this->supersample_render_target = new unsigned char[4 * sample_rate * sample_rate * target_w * target_h];
+		memset(supersample_render_target, 255, 4 * target_w * target_h * sample_rate * sample_rate);
+	}
+}
+
 void SoftwareRendererImp::set_sample_rate( size_t sample_rate ) {
 
   // Task 4: 
   // You may want to modify this for supersampling support
   this->sample_rate = sample_rate;
-
+  setup_supersample();
 }
 
 void SoftwareRendererImp::set_render_target( unsigned char* render_target,
@@ -57,12 +67,21 @@ void SoftwareRendererImp::set_render_target( unsigned char* render_target,
   this->target_w = width;
   this->target_h = height;
 
+  setup_supersample();
 }
 
-void SoftwareRendererImp::draw_element( SVGElement* element ) {
+//Matrix3x3 groupTransform = Matrix3x3::identity();
+
+void SoftwareRendererImp::draw_element( SVGElement* element, Matrix3x3 groupTransform ) {
 
   // Task 5 (part 1):
   // Modify this to implement the transformation stack
+
+
+	if (element->type != GROUP) {
+		transformation = canvas_to_screen * groupTransform * element->transform;
+	}
+
 
   switch(element->type) {
     case POINT:
@@ -87,7 +106,7 @@ void SoftwareRendererImp::draw_element( SVGElement* element ) {
       draw_image(static_cast<Image&>(*element));
       break;
     case GROUP:
-      draw_group(static_cast<Group&>(*element));
+      draw_group(static_cast<Group&>(*element), groupTransform * element->transform);
       break;
     default:
       break;
@@ -206,10 +225,10 @@ void SoftwareRendererImp::draw_image( Image& image ) {
   rasterize_image( p0.x, p0.y, p1.x, p1.y, image.tex );
 }
 
-void SoftwareRendererImp::draw_group( Group& group ) {
+void SoftwareRendererImp::draw_group( Group& group, Matrix3x3 groupTransform ) {
 
   for ( size_t i = 0; i < group.elements.size(); ++i ) {
-    draw_element(group.elements[i]);
+    draw_element(group.elements[i], groupTransform);
   }
 
 }
@@ -225,19 +244,26 @@ void SoftwareRendererImp::rasterize_point( float x, float y, Color color ) {
   int sx = (int) floor(x);
   int sy = (int) floor(y);
 
-  rasterize_pointi(sx, sy, color);
+  unsigned char* rt = sample_rate > 1 ? supersample_render_target : render_target;
+  int w = target_w * sample_rate;
+  int h = target_h * sample_rate;
+
+  rasterize_pointi(rt, w, h, sx, sy, color);
 }
 
-void SoftwareRendererImp::rasterize_pointi(int sx, int sy, Color color) {
+void SoftwareRendererImp::rasterize_pointi(unsigned char* rt, int w, int h, int sx, int sy, Color color) {
 	// check bounds
-	if (sx < 0 || sx >= target_w) return;
-	if (sy < 0 || sy >= target_h) return;
+	if (sx < 0 || sx >= w) return;
+	if (sy < 0 || sy >= h) return;
+
+	//unsigned char* rt = sample_rate > 1 ? supersample_render_target : render_target;
+	//unsigned char* rt = render_target;
 
 	// fill sample - NOT doing alpha blending!
-	render_target[4 * (sx + sy * target_w)] = (uint8_t)(color.r * 255);
-	render_target[4 * (sx + sy * target_w) + 1] = (uint8_t)(color.g * 255);
-	render_target[4 * (sx + sy * target_w) + 2] = (uint8_t)(color.b * 255);
-	render_target[4 * (sx + sy * target_w) + 3] = (uint8_t)(color.a * 255);
+	rt[4 * (sx + sy * w)] = (uint8_t)(color.r * 255);
+	rt[4 * (sx + sy * w) + 1] = (uint8_t)(color.g * 255);
+	rt[4 * (sx + sy * w) + 2] = (uint8_t)(color.b * 255);
+	rt[4 * (sx + sy * w) + 3] = (uint8_t)(color.a * 255);
 }
 
 void SoftwareRendererImp::rasterize_line( float x0f, float y0f,
@@ -247,98 +273,41 @@ void SoftwareRendererImp::rasterize_line( float x0f, float y0f,
   // Task 2: 
   // Implement line rasterization
 
-	/*if (x0 > x1) {
-		float x = x0;
-		x0 = x1;
-		x1 = x;
+	int x0 = floor(x0f * sample_rate);
+	int x1 = floor(x1f * sample_rate);
+	int y0 = floor(y0f * sample_rate);
+	int y1 = floor(y1f * sample_rate);
 
-		float y = y0;
-		y0 = y1;
-		y1 = y;
-	}*/
-		
-	int x0 = floor(x0f);
-	int x1 = floor(x1f);
-	int y0 = floor(y0f);
-	int y1 = floor(y1f);
+	bool steep = abs(x1 - x0) > abs(y1 - y0);
+	if (!steep) {
+		swap(x0, y0);
+		swap(x1, y1);
+	}
+	if (x0 > x1) {
+		swap(x0, x1);
+		swap(y0, y1);
+	}
 
 	int dx = x1 - x0,
 		dy = y1 - y0,
 		y = y0,
 		eps = 0;
 
-	if (abs(dx) > abs(dy)) 
-	{
-		if (dx < 0) {
-			std::swap(x0, x1);
-			std::swap(y0, y1);
-			dx = -dx;
-			dy = -dy;
-			y = y0;
-		}
+	int diff = dy > 0 ? 1 : -1;
 
-		if (dy > 0) {
-			for (int x = x0; x <= x1; x++) {
-				render_target[4 * (x + y * target_w)] = (uint8_t)(color.r * 255);
-				render_target[4 * (x + y * target_w) + 1] = (uint8_t)(color.g * 255);
-				render_target[4 * (x + y * target_w) + 2] = (uint8_t)(color.b * 255);
-				render_target[4 * (x + y * target_w) + 3] = (uint8_t)(color.a * 255);
+	unsigned char* rt = sample_rate > 1 ? supersample_render_target : render_target;
+	int w = target_w * sample_rate;
+	int h = target_h * sample_rate;
+	
+	for (int x = x0; x <= x1; x++) {
+		if (steep)
+			rasterize_pointi(rt, w, h, x, y, color);
+		else
+			rasterize_pointi(rt, w, h, y, x, color);
 
-				eps += dy;
-				if ((eps << 1) >= dx) {
-					y++;  eps -= dx;
-				}
-			}
-		}
-		else {
-			for (int x = x0; x <= x1; x++) {
-				render_target[4 * (x + y * target_w)] = (uint8_t)(color.r * 255);
-				render_target[4 * (x + y * target_w) + 1] = (uint8_t)(color.g * 255);
-				render_target[4 * (x + y * target_w) + 2] = (uint8_t)(color.b * 255);
-				render_target[4 * (x + y * target_w) + 3] = (uint8_t)(color.a * 255);
-
-				eps += dy;
-				if ((eps << 1) <= dx) {
-					y--;  eps += dx;
-				}
-			}
-		}
-	}
-	else {
-		if (dy < 0) {
-			std::swap(x0, x1);
-			std::swap(y0, y1);
-			dx = -dx;
-			dy = -dy;
-		}
-
-		int x = x0;
-
-		if (dx > 0) {
-			for (int y = y0; y <= y1; y++) {
-				render_target[4 * (x + y * target_w)] = (uint8_t)(color.r * 255);
-				render_target[4 * (x + y * target_w) + 1] = (uint8_t)(color.g * 255);
-				render_target[4 * (x + y * target_w) + 2] = (uint8_t)(color.b * 255);
-				render_target[4 * (x + y * target_w) + 3] = (uint8_t)(color.a * 255);
-
-				eps += dx;
-				if ((eps << 1) >= dy) {
-					x++;  eps -= dy;
-				}
-			}
-		}
-		else {
-			for (int y = y0; y <= y1; y++) {
-				render_target[4 * (x + y * target_w)] = (uint8_t)(color.r * 255);
-				render_target[4 * (x + y * target_w) + 1] = (uint8_t)(color.g * 255);
-				render_target[4 * (x + y * target_w) + 2] = (uint8_t)(color.b * 255);
-				render_target[4 * (x + y * target_w) + 3] = (uint8_t)(color.a * 255);
-
-				eps += dx;
-				if ((eps << 1) <= dy) {
-					x--;  eps += dy;
-				}
-			}
+		eps += dy;
+		if (diff * (eps << 1) >= dx * diff) {
+			y += diff;  eps -= dx * diff;
 		}
 	}
 }
@@ -349,31 +318,31 @@ enum Status {
 	Reject
 };
 
-bool is_trivial_reject_point(float b, float c, float x, float y) {
-	return b * x + c * y > 0;
+bool is_trivial_reject_point(float a, float b, float c, float x, float y) {
+	return a * x + b * y + c < 0;
 }
 
-Status is_trivial_accept_tile(int tile_x, int tile_y, int tile_w, int tile_h, float a, float b) {
-	bool x0y0 = !is_trivial_reject_point(a, b, tile_x, tile_y);
-	bool x1y0 = !is_trivial_reject_point(a, b, tile_x + tile_w, tile_y);
-	bool x0y1 = !is_trivial_reject_point(a, b, tile_x, tile_y + tile_h);
-	bool x1y1 = !is_trivial_reject_point(a, b, tile_x + tile_w, tile_y + tile_h);
+Status is_trivial_accept_tile(int tile_x, int tile_y, int tile_w, int tile_h, float a, float b, float c) {
+	bool x0y0 = !is_trivial_reject_point(a, b, c, tile_x, tile_y);
+	bool x1y0 = !is_trivial_reject_point(a, b, c, tile_x + tile_w, tile_y);
+	bool x0y1 = !is_trivial_reject_point(a, b, c, tile_x, tile_y + tile_h);
+	bool x1y1 = !is_trivial_reject_point(a, b, c, tile_x + tile_w, tile_y + tile_h);
 
 	if (x0y0 && x1y0 && x0y1 && x1y1)
 		return FullyAccept;
 	return Accept;
 }
 
-bool is_trivial_reject_tile(int tile_x, int tile_y, int tile_w, int tile_h, float a, float b) {
-	return is_trivial_reject_point(a, b, tile_x, tile_y) &&
-		is_trivial_reject_point(a, b, tile_x + tile_w, tile_y) &&
-		is_trivial_reject_point(a, b, tile_x, tile_y + tile_h) &&
-		is_trivial_reject_point(a, b, tile_x + tile_w, tile_y + tile_h);
+bool is_trivial_reject_tile(int tile_x, int tile_y, int tile_w, int tile_h, float a, float b, float c) {
+	return is_trivial_reject_point(a, b, c, tile_x, tile_y) &&
+		is_trivial_reject_point(a, b, c, tile_x + tile_w, tile_y) &&
+		is_trivial_reject_point(a, b, c, tile_x, tile_y + tile_h) &&
+		is_trivial_reject_point(a, b, c, tile_x + tile_w, tile_y + tile_h);
 }
 
-void SoftwareRendererImp::rasterize_triangle( float x0, float y0,
-                                              float x1, float y1,
-                                              float x2, float y2,
+void SoftwareRendererImp::rasterize_triangle( float x0i, float y0i,
+                                              float x1i, float y1i,
+                                              float x2i, float y2i,
                                               Color color ) {
   // Task 3: 
   // Implement triangle rasterization
@@ -385,38 +354,71 @@ void SoftwareRendererImp::rasterize_triangle( float x0, float y0,
 	int tile_w = 16;
 	int tile_h = 16;
 
-	int tile_count_w = target_w / tile_w + 1;
-	int tile_count_h = target_h / tile_h + 1;
+	unsigned char* rt = (sample_rate > 1) ? supersample_render_target : render_target;
+	int w = target_w * sample_rate;
+	int h = target_h * sample_rate;
+
+	int tile_count_w = w / tile_w + 1;
+	int tile_count_h = h / tile_h + 1;
 
 	std::vector<std::vector<bool>> tiles(tile_count_w);
 	for (int i = 0; i < tile_count_h; ++i) {
 		tiles.at(i).reserve(tile_count_h);
 	}
 
-	float b0 = y1 - y0;
-	float c0 = x1 - x0;
+	float x0 = x0i * sample_rate;
+	float x1 = x1i * sample_rate;
+	float x2 = x2i * sample_rate;
 
-	float b1 = y2 - y1;
-	float c1 = x2 - x1;
+	float y0 = y0i * sample_rate;
+	float y1 = y1i * sample_rate;
+	float y2 = y2i * sample_rate;
 
-	float b2 = y2 - y0;
-	float c2 = x2 - x0;
+	float a0 = y0 - y1;
+	float b0 = x1 - x0;
+	float c0 = y1 * x0 - y0 * x1;
+
+	float a1 = y1 - y2;
+	float b1 = x2 - x1;
+	float c1 = y2 * x1 - y1 * x2;
+
+	float a2 = y2 - y0;
+	float b2 = x0 - x2;
+	float c2 = y0 * x2 - y2 * x0;
+
+	float det = b0 * a2 - b2 * a0;
+
+	if (det < 0) {
+		a0 = -a0; a1 = -a1; a2 = -a2;
+		b0 = -b0; b1 = -b1; b2 = -b2;
+		c0 = -c0; c1 = -c1; c2 = -c2;
+	}
 	
 	for (int i = 0; i < tile_count_w; ++i) {
 		for (int j = 0; j < tile_count_h; ++j) {
-			bool trivial_reject = is_trivial_reject_tile(i * tile_w, j * tile_h, tile_w, tile_h, b0, c0) ||
-				is_trivial_reject_tile(i * tile_w, j * tile_h, tile_w, tile_h, b1, c1) ||
-				is_trivial_reject_tile(i * tile_w, j * tile_h, tile_w, tile_h, b2, c2);
+			bool trivial_reject = is_trivial_reject_tile(i * tile_w, j * tile_h, tile_w, tile_h, a0, b0, c0) ||
+				is_trivial_reject_tile(i * tile_w + 0.5f, j * tile_h + 0.5f, tile_w, tile_h, a1, b1, c1) ||
+				is_trivial_reject_tile(i * tile_w + 0.5f, j * tile_h + 0.5f, tile_w, tile_h, a2, b2, c2);
 
 			if (!trivial_reject) {
-				Status s0 = is_trivial_accept_tile(i * tile_w, j * tile_h, tile_w, tile_h, b0, c0);
-				Status s1 = is_trivial_accept_tile(i * tile_w, j * tile_h, tile_w, tile_h, b1, c1);
-				Status s2 = is_trivial_accept_tile(i * tile_w, j * tile_h, tile_w, tile_h, b2, c2);
+				Status s0 = is_trivial_accept_tile(i * tile_w + 0.5f, j * tile_h + 0.5f, tile_w, tile_h, a0, b0, c0);
+				Status s1 = is_trivial_accept_tile(i * tile_w + 0.5f, j * tile_h + 0.5f, tile_w, tile_h, a1, b1, c1);
+				Status s2 = is_trivial_accept_tile(i * tile_w + 0.5f, j * tile_h + 0.5f, tile_w, tile_h, a2, b2, c2);
 
 				if (s0 == FullyAccept && s1 == FullyAccept && s2 == FullyAccept) {
 					for (int x = 0; x < tile_w; ++x) {
 						for (int y = 0; y < tile_h; ++y) {
-							rasterize_pointi(i * tile_w + x, j * tile_h + y, color);
+							rasterize_pointi(rt, w, h, i * tile_w + x, j * tile_h + y, color);
+						}
+					}
+				}
+				else if (s0 == Accept || s1 == Accept || s2 == Accept) {
+					for (int x = 0; x < tile_w; ++x) {
+						for (int y = 0; y < tile_h; ++y) {
+							if (!is_trivial_reject_point(a0, b0, c0, i * tile_w + x + 0.5f, j * tile_h + y + 0.5f) &&
+								!is_trivial_reject_point(a1, b1, c1, i * tile_w + x + 0.5f, j * tile_h + y + 0.5f) &&
+								!is_trivial_reject_point(a2, b2, c2, i * tile_w + x + 0.5f, j * tile_h + y + 0.5f))
+							rasterize_pointi(rt, w, h, i * tile_w + x, j * tile_h + y, color);
 						}
 					}
 				}
@@ -439,9 +441,33 @@ void SoftwareRendererImp::resolve( void ) {
   // Task 4: 
   // Implement supersampling
   // You may also need to modify other functions marked with "Task 4".
+	
+	if (sample_rate <= 1)
+		return;
+
+	int w = target_w * sample_rate;
+	int h = target_h * sample_rate;
+	for (int i = 0; i < w; i += sample_rate) {
+		for (int j = 0; j < h; j += sample_rate) {
+			float r = 0, g = 0, b = 0, a = 0;
+			for (int x = 0; x < sample_rate; ++x) {
+				for (int y = 0; y < sample_rate; ++y) {
+					r += (float)supersample_render_target[4 * (i + x + (j + y) * w)] / 255.f;
+					g += (float)supersample_render_target[4 * (i + x + (j + y) * w) + 1] / 255.f;
+					b += (float)supersample_render_target[4 * (i + x + (j + y) * w) + 2] / 255.f;
+					a += (float)supersample_render_target[4 * (i + x + (j + y) * w) + 3] / 255.f;
+				}
+			}
+			r /= sample_rate * sample_rate;
+			g /= sample_rate * sample_rate;
+			b /= sample_rate * sample_rate;
+			a /= sample_rate * sample_rate;
+
+			rasterize_pointi(render_target, target_w, target_h, i / sample_rate, j / sample_rate, Color(r, g, b, a));
+		}
+	}
+	
   return;
-
 }
-
 
 } // namespace CMU462
